@@ -1,0 +1,82 @@
+name: accordo
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-accordo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-accordo}
+      POSTGRES_DB: ${POSTGRES_DB:-accordo}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-accordo} -d ${POSTGRES_DB:-accordo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command: sh -c "npm run db:migrate && npm run db:seed && npm run dev"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://${POSTGRES_USER:-accordo}:${POSTGRES_PASSWORD:-accordo}@db:5432/${POSTGRES_DB:-accordo}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-super-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      ORGANIZER_INVITE_CODE: ${ORGANIZER_INVITE_CODE:-ORGANIZZA2026}
+      CORS_ORIGIN: http://localhost:${WEB_PORT:-5173}
+      SMTP_URL: smtp://mailpit:1025
+      APP_URL: http://localhost:${WEB_PORT:-5173}
+    ports:
+      - "${API_PORT:-4000}:4000"
+    volumes:
+      - ./backend:/app
+      - backend-node-modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:4000
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
+  backend-node-modules:
+  frontend-node-modules:
