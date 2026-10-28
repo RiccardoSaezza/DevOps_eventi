@@ -1,0 +1,1007 @@
+openapi: 3.0.3
+info:
+  title: Accordo API
+  version: 1.0.0
+  description: |
+    API REST della piattaforma **Accordo** per la gestione e la prenotazione di eventi dal vivo.
+
+    **Autenticazione:** JWT Bearer (`Authorization: Bearer <token>`), ottenuto da `/auth/register` o `/auth/login`.
+    **Formato date:** ISO 8601 UTC.
+    **Errori:** oggetto uniforme `{ "error": { "code", "message", "details?" } }`.
+
+    Questa specifica copre esclusivamente gli endpoint implementati nel MVP. Le estensioni
+    (collaboratori, approvazione workshop, pagamenti, email) sono documentate in `docs/06-scope-e-riflessioni.md`.
+  contact:
+    name: Progetto didattico Sviluppo Agile e DevOps
+  license:
+    name: Progetto didattico — uso non commerciale
+servers:
+  - url: '{protocol}://{host}:{port}/api'
+    description: Ambiente di sviluppo locale (Docker Compose)
+    variables:
+      protocol:
+        default: http
+        enum: [http, https]
+      host:
+        default: localhost
+      port:
+        default: '4000'
+tags:
+  - name: Sistema
+    description: Stato del servizio
+  - name: Autenticazione
+    description: Registrazione, accesso e profilo
+  - name: Eventi
+    description: Catalogo, gestione e prenotazioni degli eventi
+  - name: Prenotazioni
+    description: Prenotazioni dell'utente corrente
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Stato di API e database
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: API e database operativi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: ok
+                database: up
+                timestamp: '2026-10-28T18:17:05.461Z'
+        '503':
+          description: Database non raggiungibile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: degraded
+                database: down
+                timestamp: '2026-10-28T18:17:05.461Z'
+        '500':
+          description: Errore interno non gestito
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INTERNAL_ERROR
+                  message: Si è verificato un errore interno. Riprova più tardi.
+
+  /auth/register:
+    post:
+      tags: [Autenticazione]
+      summary: Registra un nuovo account
+      description: |
+        Crea un account `PARTECIPANTE`. Se viene fornito un `organizerCode` valido,
+        il ruolo assegnato è `ORGANIZZATORE`. Al successo restituisce un JWT e il profilo.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInput'
+            example:
+              name: Giulia Rossi
+              email: giulia@example.com
+              password: Password123!
+      responses:
+        '201':
+          description: Account creato e sessione avviata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '403':
+          description: Codice organizzatore non valido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_INVITE_CODE
+                  message: Il codice organizzatore non è valido.
+        '409':
+          description: Email già registrata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: EMAIL_IN_USE
+                  message: Esiste già un account con questa email.
+        '422':
+          description: Dati non validi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /auth/login:
+    post:
+      tags: [Autenticazione]
+      summary: Accedi con email e password
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+            example:
+              email: giulia@example.com
+              password: Password123!
+      responses:
+        '200':
+          description: Credenziali valide
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Credenziali non valide
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: Email o password non corretti.
+        '422':
+          description: Payload non valido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /auth/me:
+    get:
+      tags: [Autenticazione]
+      summary: Profilo dell'utente corrente
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Profilo corrente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Account non più disponibile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events:
+    get:
+      tags: [Eventi]
+      summary: Elenca gli eventi pubblicati
+      description: |
+        Restituisce gli eventi `PUBBLICATO`, ordinati per data di inizio crescente.
+        Per impostazione predefinita mostra solo gli eventi futuri (`period=upcoming`).
+      operationId: listEvents
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Ricerca case-insensitive su titolo, luogo e descrizione
+          schema:
+            type: string
+            maxLength: 100
+        - name: type
+          in: query
+          description: Filtra per formato
+          schema:
+            $ref: '#/components/schemas/EventType'
+        - name: from
+          in: query
+          description: Data di inizio minima (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Data di inizio massima (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: available
+          in: query
+          description: Se `true`, restituisce solo eventi con almeno un posto libero
+          schema:
+            type: boolean
+        - name: period
+          in: query
+          description: Finestra temporale
+          schema:
+            type: string
+            enum: [upcoming, past, all]
+            default: upcoming
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Lista paginata di eventi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
+        '422':
+          description: Parametri di filtro non validi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+    post:
+      tags: [Eventi]
+      summary: Crea e pubblica un evento
+      description: |
+        Riservato agli utenti con ruolo `ORGANIZZATORE`. L'evento nasce
+        `PUBBLICATO` ed è subito visibile nel catalogo. Il proprietario è
+        l'utente autenticato, non un campo del payload.
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventInput'
+            example:
+              title: Notturno Elettrico
+              description: Live set di synth e percussioni.
+              type: CONCERTO
+              startsAt: '2026-11-08T20:00:00.000Z'
+              location: Ex Macello, Bologna
+              capacity: 120
+      responses:
+        '201':
+          description: Evento creato e pubblicato
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Dati non validi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /events/mine:
+    get:
+      tags: [Eventi]
+      summary: Elenca gli eventi dell'organizzatore corrente
+      operationId: listMyEvents
+      responses:
+        '200':
+          description: Eventi creati dall'utente, inclusi gli annullati
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /events/{id}:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [Eventi]
+      summary: Dettaglio di un evento
+      operationId: getEvent
+      security: []
+      responses:
+        '200':
+          description: Dettaglio evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Eventi]
+      summary: Modifica un evento di cui si è proprietari
+      description: |
+        Aggiornamento parziale o completo. La capienza non può scendere sotto il
+        numero di prenotazioni attive. Un evento annullato non è modificabile.
+      operationId: updateEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEventInput'
+      responses:
+        '200':
+          description: Evento aggiornato
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Evento annullato o capienza insufficiente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                cancelled:
+                  value:
+                    error:
+                      code: EVENT_CANCELLED
+                      message: Non puoi modificare un evento annullato.
+                capacityTooLow:
+                  value:
+                    error:
+                      code: CAPACITY_TOO_LOW
+                      message: La capienza non può essere inferiore ai 3 posti già prenotati.
+        '422':
+          description: Dati non validi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /events/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Eventi]
+      summary: Annulla un evento e le sue prenotazioni attive
+      operationId: cancelEvent
+      responses:
+        '200':
+          description: Evento annullato
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelEventResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Evento già annullato
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: ALREADY_CANCELLED
+                  message: Questo evento è già stato annullato.
+
+  /events/{id}/bookings:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [Eventi]
+      summary: Elenca le prenotazioni di un evento (solo proprietario)
+      operationId: listEventBookings
+      responses:
+        '200':
+          description: Prenotazioni dell'evento, ordinate per data di creazione
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventBookingListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Eventi]
+      summary: Prenota un posto per l'evento
+      description: |
+        Crea una prenotazione `CONFERMATA`. Per i concerti assegna automaticamente
+        il primo posto numerato libero; per workshop e DJ set `seatNumber` è `null`.
+        Una sola prenotazione attiva per utente ed evento.
+      operationId: createBooking
+      responses:
+        '201':
+          description: Prenotazione confermata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Prenotazione non possibile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyBooked:
+                  value:
+                    error:
+                      code: ALREADY_BOOKED
+                      message: Hai già una prenotazione attiva per questo evento.
+                soldOut:
+                  value:
+                    error:
+                      code: SOLD_OUT
+                      message: Evento esaurito.
+                eventCancelled:
+                  value:
+                    error:
+                      code: EVENT_CANCELLED
+                      message: Questo evento è stato annullato.
+                eventStarted:
+                  value:
+                    error:
+                      code: EVENT_STARTED
+                      message: Le prenotazioni per questo evento sono chiuse.
+
+  /bookings/me:
+    get:
+      tags: [Prenotazioni]
+      summary: Elenca le prenotazioni dell'utente corrente
+      operationId: listMyBookings
+      responses:
+        '200':
+          description: Prenotazioni con riepilogo dell'evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /bookings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+    delete:
+      tags: [Prenotazioni]
+      summary: Annulla una prenotazione
+      description: |
+        Consentito al proprietario della prenotazione o all'organizzatore dell'evento.
+        L'annullamento è logico: il posto torna disponibile.
+      operationId: cancelBooking
+      responses:
+        '200':
+          description: Prenotazione annullata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Prenotazione già annullata o evento iniziato
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                alreadyCancelled:
+                  value:
+                    error:
+                      code: ALREADY_CANCELLED
+                      message: Questa prenotazione è già stata annullata.
+                eventStarted:
+                  value:
+                    error:
+                      code: EVENT_STARTED
+                      message: Non è più possibile annullare la prenotazione.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token ottenuto da `/auth/register` o `/auth/login`.
+
+  parameters:
+    EventId:
+      name: id
+      in: path
+      required: true
+      description: UUID dell'evento
+      schema:
+        type: string
+        format: uuid
+    BookingId:
+      name: id
+      in: path
+      required: true
+      description: UUID della prenotazione
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Token assente, non valido o scaduto
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missing:
+              value:
+                error:
+                  code: UNAUTHENTICATED
+                  message: Devi effettuare l'accesso per continuare.
+            invalid:
+              value:
+                error:
+                  code: INVALID_TOKEN
+                  message: Sessione non valida o scaduta. Effettua di nuovo il login.
+    Forbidden:
+      description: Ruolo o ownership insufficienti
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: FORBIDDEN
+              message: Il tuo ruolo non consente questa operazione.
+    NotFound:
+      description: Risorsa inesistente o identificativo non valido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NOT_FOUND
+              message: Evento non trovato.
+
+  schemas:
+    Role:
+      type: string
+      enum: [PARTECIPANTE, ORGANIZZATORE]
+
+    EventType:
+      type: string
+      enum: [CONCERTO, WORKSHOP, DJ_SET]
+
+    EventStatus:
+      type: string
+      enum: [PUBBLICATO, ANNULLATO]
+
+    BookingStatus:
+      type: string
+      enum: [CONFERMATA, ANNULLATA]
+
+    User:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 2
+          maxLength: 80
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        role:
+          $ref: '#/components/schemas/Role'
+
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+          description: JWT firmato HS256, valido 7 giorni
+        user:
+          $ref: '#/components/schemas/User'
+
+    RegisterInput:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 80
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+        organizerCode:
+          type: string
+          maxLength: 80
+          description: Se presente e valido, assegna il ruolo ORGANIZZATORE.
+
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    Event:
+      type: object
+      required:
+        [id, title, description, type, startsAt, location, capacity, status,
+         createdBy, organizerName, bookedCount, availableSeats, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 4000
+        type:
+          $ref: '#/components/schemas/EventType'
+        startsAt:
+          type: string
+          format: date-time
+        location:
+          type: string
+          minLength: 2
+          maxLength: 160
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        status:
+          $ref: '#/components/schemas/EventStatus'
+        createdBy:
+          type: string
+          format: uuid
+        organizerName:
+          type: string
+        bookedCount:
+          type: integer
+          minimum: 0
+        availableSeats:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateEventInput:
+      type: object
+      required: [title, type, startsAt, location, capacity]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 4000
+          default: ''
+        type:
+          $ref: '#/components/schemas/EventType'
+        startsAt:
+          type: string
+          format: date-time
+          description: Deve essere una data futura.
+        location:
+          type: string
+          minLength: 2
+          maxLength: 160
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10000
+
+    UpdateEventInput:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 4000
+        type:
+          $ref: '#/components/schemas/EventType'
+        startsAt:
+          type: string
+          format: date-time
+        location:
+          type: string
+          minLength: 2
+          maxLength: 160
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10000
+
+    Booking:
+      type: object
+      required: [id, eventId, userId, status, seatNumber, createdAt, cancelledAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/BookingStatus'
+        seatNumber:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Presente solo per i concerti; null per workshop e DJ set.
+        createdAt:
+          type: string
+          format: date-time
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    BookingEventSummary:
+      type: object
+      required: [id, title, type, startsAt, location, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/EventType'
+        startsAt:
+          type: string
+          format: date-time
+        location:
+          type: string
+        status:
+          $ref: '#/components/schemas/EventStatus'
+
+    BookingWithEvent:
+      allOf:
+        - $ref: '#/components/schemas/Booking'
+        - type: object
+          required: [event]
+          properties:
+            event:
+              $ref: '#/components/schemas/BookingEventSummary'
+
+    EventBooking:
+      type: object
+      required: [id, seatNumber, status, createdAt, participant]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seatNumber:
+          type: integer
+          minimum: 1
+          nullable: true
+        status:
+          $ref: '#/components/schemas/BookingStatus'
+        createdAt:
+          type: string
+          format: date-time
+        participant:
+          type: object
+          required: [name, email]
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+
+    Health:
+      type: object
+      required: [status, database, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down]
+        timestamp:
+          type: string
+          format: date-time
+
+    UserEnvelope:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+
+    EventEnvelope:
+      type: object
+      required: [event]
+      properties:
+        event:
+          $ref: '#/components/schemas/Event'
+
+    EventsResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+
+    EventListResponse:
+      type: object
+      required: [events, meta]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        meta:
+          type: object
+          required: [page, limit, total]
+          properties:
+            page:
+              type: integer
+              minimum: 1
+            limit:
+              type: integer
+              minimum: 1
+            total:
+              type: integer
+              minimum: 0
+
+    BookingResponse:
+      type: object
+      required: [booking]
+      properties:
+        booking:
+          $ref: '#/components/schemas/Booking'
+
+    BookingListResponse:
+      type: object
+      required: [bookings]
+      properties:
+        bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookingWithEvent'
+
+    EventBookingListResponse:
+      type: object
+      required: [bookings]
+      properties:
+        bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventBooking'
+
+    CancelEventResponse:
+      type: object
+      required: [event, cancelledBookings]
+      properties:
+        event:
+          $ref: '#/components/schemas/Event'
+        cancelledBookings:
+          type: integer
+          minimum: 0
+          description: Numero di prenotazioni attive chiuse dall'annullamento.
+
+    ErrorDetail:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Codice stabile per la logica del client.
+            message:
+              type: string
+              description: Messaggio leggibile in italiano.
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/ErrorDetail'
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              type: object
+              properties:
+                code:
+                  type: string
+                  example: VALIDATION_ERROR
+                message:
+                  type: string
+                  example: Alcuni campi non sono validi.
+                details:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ErrorDetail'
