@@ -31,7 +31,12 @@ export function RegisterPage() {
   const [busy, setBusy] = useState(false);
 
   if (user) {
-    return <Navigate to={redirect ?? '/my-bookings'} replace />;
+    return (
+      <Navigate
+        to={redirect ?? (user.role === 'ORGANIZZATORE' ? '/organizer' : '/my-bookings')}
+        replace
+      />
+    );
   }
 
   async function handleSubmit(event: FormEvent) {

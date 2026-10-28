@@ -1,7 +1,11 @@
 import { Link } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 import { Brand } from './Brand';
 
 export function Footer() {
+  const { user } = useAuth();
+  const isOrganizer = user?.role === 'ORGANIZZATORE';
+
   return (
     <footer className="footer">
       <div className="container footer__inner">
@@ -16,9 +20,23 @@ export function Footer() {
             <Link to="/my-bookings">I miei posti</Link>
           </div>
           <div>
-            <h4>Organizza</h4>
-            <Link to="/organizer">Dashboard</Link>
-            <Link to="/organizer/events/new">Crea un evento</Link>
+            <h4>{isOrganizer ? 'Organizza' : 'Account'}</h4>
+            {isOrganizer ? (
+              <>
+                <Link to="/organizer">Dashboard</Link>
+                <Link to="/organizer/events/new">Crea un evento</Link>
+              </>
+            ) : user ? (
+              <>
+                <Link to="/my-bookings">I miei posti</Link>
+                <Link to="/">Cerca eventi</Link>
+              </>
+            ) : (
+              <>
+                <Link to="/register">Registrati</Link>
+                <Link to="/login">Accedi</Link>
+              </>
+            )}
           </div>
         </div>
       </div>

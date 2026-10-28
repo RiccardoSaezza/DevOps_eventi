@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import { EventTypeBadge } from '../components/Badges';
 import { PageLoader } from '../components/ProtectedRoute';
 import { useToast } from '../components/ToastProvider';
@@ -60,6 +61,7 @@ export function EventFormPage() {
   const editing = Boolean(id);
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { user } = useAuth();
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [bookedCount, setBookedCount] = useState(0);
@@ -77,6 +79,10 @@ export function EventFormPage() {
       .get(id)
       .then(({ event }) => {
         if (!active) return;
+        if (user && event.createdBy !== user.id) {
+          setLoadError('Puoi modificare solo gli eventi che hai creato.');
+          return;
+        }
         setForm({
           title: event.title,
           description: event.description,
@@ -99,7 +105,7 @@ export function EventFormPage() {
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, user]);
 
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
